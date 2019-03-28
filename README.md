@@ -37,3 +37,17 @@ Table: online.csv	954774 obs. of  7 variables:
 |category| int  1 1 1 1 1 1 1 1 1 1 ...	|Online browsing category|
 |event1  | int  NA NA NA NA NA NA NA NA NA NA ...	|Online event 1|
 |event2  | int  1 1 1 1 1 1 1 1 1 1 ...	|Online event 2|
+
+
+## Summary of my analysis
+
+To summarise, we had the customer order data as well as customer online activity data. We explored the data and found out that there is a seasonality in the revenue, number of orders, as well as the online activity. It peaks during Nov and Dec and drops during the months of Feb and Oct. We also saw that this trend is consitent across browsing categories as well as differnet online events. We also found out that most of the online activity is done on browsing category 3.
+
+We also tried associating customer order data with online behaviour. While doing so, we made an assumption  
+*1. Only the last 30 days of online activity drives buying behaviour for a customer.  
+Any activity before that does not affect buying behaviour significantly. Based on this assumption, we have merged the online data with the order data. We were also able to derive som metrics like, count of each online event before the purchase, Number of days since last order, order month etc. We have used this metric to predict product category-1.
+
+The predictive problem we are trying to solve is: Based on historical purchases and online beviour, what is the likelihood that a customer would purchase a product from a product-category1. To fit and measure the performance of the model, we first split the data into training and test sample. 70% of the data is used for training and 30% for measure its performance on unseen data. We have tried multinomial logistic regression, random forest, and random forest with hyper parameter tuning. Both the models performed decent on the test data. The models are good at identifying whether a customer is not going to buy from a particular product-category. The AUC value shows that the model does a decent job of separating classes in logistic regression. To improve the performance of the random forest model, we can perform hyperparameter tuning using a grid-search approach. This process takes a lot of time and computation capacity. I have shared the code for doing that.
+
+With a better predicitve power, we can predict with high accuracy the product category where a customer is mostly likely to shop from. We can use this information to run targeted campaign or provide incentive to buy back from us.
+
