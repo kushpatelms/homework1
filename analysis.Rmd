@@ -1,0 +1,681 @@
+---
+title: "R Notebook"
+output: 
+  html_document:
+    keep_md: true
+---
+
+#Data Science Homework - Homework assignment for Data Scientist candidate
+
+#####Loading the needed libraries and setting the working directory
+
+```{r}
+
+library(tidyverse)
+library(lubridate)
+library(caret)
+library(HandTill2001)
+rm(list=ls())
+getwd()
+setwd('C:/Users/KPatel/OneDrive - CBRE, Inc/Documents/career/Shutterfly')
+```
+
+#####Importing the data from the zip file
+```{r}
+order <- read.table(unz("data.zip", "order.csv"), header=T, quote="\"", sep=",")
+online<- read.table(unz("data.zip", "online.csv"), header=T, quote="\"", sep=",")
+```
+
+
+##1. Exploration and understanding of the data sets
+
+###Order dataset
+Lets look at the structure of the data
+```{r}
+str(order)
+```
+we can see that the custno, ordno, prodcat2, prodcat1 are integer but should be factors. Also, orderdate is a factor which should be a Datetime column. Changing the data type of these columns.
+```{r}
+order[c('custno','ordno','prodcat1','prodcat2')] <- lapply(order[c('custno','ordno','prodcat1','prodcat2')], factor)  ## as.factor() could also be used
+
+order$orderdate <- strptime(x = as.character(order$orderdate),
+                                format = "%Y-%m-%d %H:%M:%S")
+order$orderdate <- as.POSIXct(order$orderdate, tz = "", format="%Y-%m-%d %H:%M:%S")
+
+str(order)
+```
+
+Now lets look at the summary of the data.
+```{r}
+summary(order)
+```
+We can see that we have the order data for years 2016, 2017, and 2018. We can also see that there are some missing values in prodcat2.
+
+Lets explore at prodcat2
+```{r}
+length(unique(order$prodcat2))
+```
+We have 252 levels in the prodcat2 categorical variable. Lets try to understand the mapping between prodcat1 and prodcat2
+```{r}
+tab<-table(order$prodcat2,order$prodcat1)
+head(tab,50)
+```
+There are also NA's in the prodcat2.
+```{r}
+summary(order$prodcat2)
+```
+There are 1823 NA's in the prodcat2 field. We could impute these values using statistical methods. However, given the time-constraint, we won't dive deep into prodcat2.
+
+Lets first understand the level of the data. Intuitively, it looks like that the data is at product level. Lets check that by aggregating data.
+```{r}
+level_ord<- order %>% group_by(custno,ordno,orderdate,prodcat1,prodcat2) %>% summarise(cnt=n()) %>% arrange(desc(cnt))
+head(level_ord)
+```
+
+We can see that for custno 9 and ordno 23204, we are getting the cnt of more than 1 for each combination of prodcat1 and prodcat2. Lets look at the order data for this case
+```{r}
+cust_9<-order %>% filter(custno==9,ordno==23204)
+cust_9
+```
+We clearly see from the above example that the data is at product level. Lets get it at order and prodcat1 level.
+```{r}
+order_agg<- order %>% group_by(custno,ordno,orderdate,prodcat1) %>% summarise(revenue = sum(revenue), num_prod = n())
+head(order_agg,10)
+```
+
+
+
+Lets look at revenue.
+```{r}
+summary(order$revenue)
+
+hist(order$revenue,breaks = 30)
+```
+We can see from the histogram that revenue is uniformly distributed. Lets check revenue and ordersize across different prodcat1 and customers
+```{r}
+as.data.frame(order %>% group_by(prodcat1) %>% summarise(avg_rev_per_product=mean(revenue),total_rev=sum(revenue),num_orders=length(unique(ordno)),cnt_cust=length(unique(custno))))
+```
+From the above data we can see that the prodcat1=1 has the highest sales volume both in terms of revenue, number of orders as well as number of customers, whereas prodcat1=5 has the lowest.
+
+
+Lets look at trend in revenue with time
+```{r fig.width=9}
+library(lubridate)
+
+
+order %>% mutate(Year_Month=format(as.Date(orderdate), "%Y-%m")) %>% group_by(Year_Month) %>% summarise(revenue=sum(revenue)) %>% ggplot(aes(x=Year_Month,y=revenue)) + geom_bar(stat='identity')+
+xlab('orderdate')+ylab('Revenue')+ theme(axis.text.x = element_text(angle = 90, hjust = 1))#+ggtitle("Cumulative")
+
+```
+We can see a seasonlaity here. The Revenue peaks during the months of Dec and Jan. It then drops during the month of Feb and starts rising again and reaches another peak around May-June and then plunges in Oct. Then it rises again and peaks in Dec-Jan. The highest revenue was earned in Jan-2017 and lowest in Oct-2018.Lets break it down across product category and see if we get any seasonality across prodcat1. 
+
+```{r fig.width=15, fig.height=10}
+order %>% mutate(Year_Month=format(as.Date(orderdate), "%Y-%m")) %>% group_by(Year_Month,prodcat1) %>% summarise(revenue=sum(revenue)) %>% ggplot(aes(x=Year_Month,y=revenue,color=prodcat1,group=prodcat1)) +                    geom_line()+ facet_wrap(~prodcat1,nrow=3, scales = 'free') +
+xlab('orderdate')+ylab('Revenue')+ theme(axis.text.x = element_text(angle = 90, hjust = 1))#+ggtitle("Cumulative")
+
+
+```
+We can see a seasonality across all the prodcat1 similar to the overall revenue category
+
+We expect a similar trend for num_products ordered. Lets calculate the correlation between revenue and number of products ordered.
+
+```{r}
+cor(order_agg$revenue,order_agg$num_prod)
+```
+The two fields are highly correlated which is evident from the scatter-plot given below
+```{r}
+order_agg %>% ggplot(aes(x=revenue,y=num_prod)) + geom_point()
+```
+
+Lets look at the scatterplot across each product category and calculate the correlation at that level.
+```{r fig.width=15, fig.height=10}
+order_agg %>% ggplot(aes(x=revenue,y=num_prod)) + geom_point()+ facet_wrap(~prodcat1,nrow=3, scales = 'free')
+```
+
+```{r}
+as.data.frame(order_agg %>% group_by(prodcat1) %>% summarise(cor_rev_prod=cor(revenue,num_prod)))
+```
+The correlation across each prodcat1 is high.
+
+
+###Online dataset
+Lets look at the structure of the data
+```{r}
+str(online)
+```
+
+The categorical columns custno, category, event1, event2, session, and visitor are in integer and the dt column should be of datetime datetype.
+```{r}
+online[c('session','visitor','custno','category','event1','event2')] <- lapply(online[c('session','visitor','custno','category','event1','event2')], factor)  ## as.factor() could also be used
+
+online$dt <- strptime(x = as.character(online$dt),
+                                format = "%Y-%m-%d %H:%M:%S")
+online$dt <- as.POSIXct(online$dt, tz = "", format="%Y-%m-%d %H:%M:%S")
+
+str(online)
+```
+
+Lets look at the summary of the data
+```{r}
+summary(online)
+```
+We can see that the duration of the online data is from Jan-2016 to Dec-2017. We have 3 levels in online browsing category and multiple levels in event1 and event2. Lets first compare the number of customers in online vs order.
+```{r}
+length(unique(online$custno))
+length(unique(order$custno))
+```
+There are 57584 customers in online and 70264 customers in the order dataset. Getting a list of customers common to both the datasets
+```{r}
+common_cust<-unique(order[which(order$custno %in% unique(online$custno)),]$custno)
+length(common_cust)
+```
+Lets calculate online activity across each of online browsing categories.
+```{r}
+as.data.frame(online %>% group_by(category) %>% summarise(activity=n(),unique_sessions=length(unique(session)),num_cust=length(unique(custno))))
+```
+Here activity means any sort of activity, be it creation of session, change in event1 or event2 etc. Unique sessions is the count of unique sessions created on each category and new_cust is the number of unique customers that used that category. Here, online browsing category could mean which device or what channel is used by the customer to browse the website.
+
+Moving onto event1, we can see that majority of the values in that field are null
+```{r}
+prop.table(table(online$event1,useNA = "ifany"))*100
+```
+83% of the values are null in event1. We will assume here that all the null values in event1 belong to one class which is class 0.
+```{r}
+levels(online$event1)
+online$event1<-factor(ifelse(is.na(online$event1), 0, paste(online$event1)), levels = c(levels(online$event1), 0))
+levels(online$event1)
+prop.table(table(online$event1))*100
+```
+
+
+Lets look at event2,
+```{r}
+prop.table(table(online$event2,useNA = "ifany"))*100
+```
+We can see that event2 is a highly imbalanced class with 39% of the data is in class 7 and 14% in class3. Lets look at online activity across each of the class in event2.
+```{r}
+as.data.frame(online %>% group_by(event2) %>% summarise(activity=n(),unique_sessions=length(unique(session)),num_cust=length(unique(custno))))
+```
+AS expected, most of the activity is across class7 followed by class3 and class8. However, its still not enough to tell us what the value of each those class means.
+
+Lets look at the time series trends of online activity
+```{r fig.width=11, fig.height=4}
+online %>% mutate(Year_Month=format(as.Date(dt), "%Y-%m")) %>% group_by(Year_Month) %>% summarise(activity=n(),unique_sessions=length(unique(session)),num_cust=length(unique(custno)))%>% ggplot() + geom_line(aes(x = Year_Month, y = activity, group=1, colour = "activity")) + 
+geom_line(aes(x = Year_Month, y = unique_sessions, group=2, colour = "unique_sessions")) + 
+geom_line(aes(x = Year_Month, y = num_cust, group=2, colour = "num_cust"))+ theme(axis.text.x = element_text(angle = 90, hjust = 1))
+```
+
+We will further break it down by browsing category
+```{r fig.width=11, fig.height=6}
+online %>% mutate(Year_Month=format(as.Date(dt), "%Y-%m")) %>% group_by(Year_Month,category) %>% summarise(activity=n(),unique_sessions=length(unique(session)),num_cust=length(unique(custno)))%>% ggplot() + geom_line(aes(x = Year_Month, y = activity, group=1, colour = "activity")) + 
+geom_line(aes(x = Year_Month, y = unique_sessions, group=2, colour = "unique_sessions")) + 
+geom_line(aes(x = Year_Month, y = num_cust, group=2, colour = "num_cust"))+
+facet_wrap(~category, nrow=2,scales = 'free') +
+theme(axis.text.x = element_text(angle = 90, hjust = 1))
+```
+
+
+Lets break down online activity by event2.
+```{r fig.height=15}
+online %>% mutate(Year_Month=format(as.Date(dt), "%Y-%m")) %>% group_by(Year_Month,event2) %>% summarise(activity=n(),unique_sessions=length(unique(session)),num_cust=length(unique(custno)))%>% ggplot() + geom_line(aes(x = Year_Month, y = activity, group=1, colour = "activity")) + 
+geom_line(aes(x = Year_Month, y = unique_sessions, group=2, colour = "unique_sessions")) + 
+geom_line(aes(x = Year_Month, y = num_cust, group=2, colour = "num_cust"))+
+facet_wrap(~event2, nrow=5,scales = 'free') +
+theme(axis.text.x = element_text(angle = 90, hjust = 1))
+```
+
+
+From all the online activity plot, we can see a seasonality trend. The online activity starts peaking from Nov till Jan then falls to the lowest in Feb. It then remains pretty steady till Oct. This trend is similar to the one we obtained for revenue and number of orders.
+
+##2.Feature engineering
+Lets try to understand the level of the data in online dataset.
+```{r}
+level_online<-online %>% group_by(session,custno,dt,event1,event2)%>% summarise(cnt=n()) %>% arrange(desc(cnt)) 
+head(level_online)
+```
+We can see that each record is uniquely identified at session, customer, datetime, event1, and event2. Lets change the level of the data by spreading the online data on event2
+```{r}
+online$val<-1
+online_spread_e2<-spread(online,event2,val,fill=0,sep = '_')
+head(online_spread_e2)
+online$val<-NULL
+```
+We will further spread the online data on key event1.
+```{r}
+online_spread_e2$val<-1
+online_spread_e2e1<-spread(online_spread_e2,event1,val,fill=0,sep = '_')
+
+head(online_spread_e2e1)
+```
+
+There is also a possibility that a customer can use different browsing categories (for example, custno 6). To account for that we have to spread the data by category as well.
+```{r}
+online_spread_e2e1$val<-1
+online_spread_e2e1cat<-spread(online_spread_e2e1,category,val,fill=0,sep = '_')
+
+head(online_spread_e2e1cat)
+```
+
+Now, we will engineer features from Order data. One set of important features are is the revenue made by a customer on the last order of the same product category as well as and the number number of items ordered the last time. I have created those features below
+
+```{r}
+
+order_agg<- order_agg %>% arrange(custno,prodcat1,orderdate,) %>% group_by(custno, prodcat1) %>% mutate(cum_rev=cumsum(revenue), cum_num_prod=cumsum(num_prod))
+
+
+order_agg$cumrev_till_prev_order <- order_agg$cum_rev - order_agg$revenue
+order_agg$cumnum_prod_till_prev_order <- order_agg$cum_num_prod - order_agg$num_prod
+order_agg <- order_agg %>% arrange(custno,prodcat1,orderdate) %>%
+  group_by(custno,prodcat1) %>%
+  mutate(rev_prev_ord = dplyr::lag(revenue, n = 1, default = 0),num_prod_prev_ord = dplyr::lag(num_prod, n = 1, default = 0))
+
+order_agg[,c("revenue","num_prod","cum_rev","cum_num_prod")]<-NULL
+summary(order_agg)
+```
+The following four metrics are created.
+*1. cum_rev_till_prev_order: This is the cumulative revenue of a customer till previous order
+*2. cumnum_prod_till_prev_order: Cumulative number of items till previous order.
+*3. rev_prev_order: revenue made from previous order
+*4. num_prod_prev_order: Number of items ordered from previous order
+
+Another important metric would be number of days till last order
+```{r}
+order_agg <- order_agg %>% arrange(custno,prodcat1,orderdate) %>%
+  group_by(custno,prodcat1) %>%
+  mutate(orderdate_prev_ord = dplyr::lag(orderdate, n = 1, default = NA))
+
+order_agg$num_days_till_last_order <- difftime(order_agg$orderdate, order_agg$orderdate_prev_ord, units="days")
+
+order_agg$orderdate_prev_ord<-NULL
+
+order_agg$num_days_till_last_order <-as.numeric(order_agg$num_days_till_last_order)
+
+summary(order_agg$num_days_till_last_order)
+```
+
+The order aggregate data now looks like.
+```{r}
+head(order_agg,10)
+```
+
+
+Now lets join the above data with order_agg data (order data aggregated at order-prodcat1 level). We will join order_agg with prodcat1 on the inequality. Since we are planning to predict prodcat1, we will put order_agg on the left and perform a left join.
+```{r}
+joined_df<-left_join(order_agg,online_spread_e2e1cat,by="custno") 
+joined_df[,13:36][is.na(joined_df[,13:36])] <- 0
+
+
+
+joined_df$dt<- as.character(joined_df$dt)
+
+joined_df$dt<-ifelse(joined_df$dt>joined_df$orderdate,NA,joined_df$dt)
+
+
+joined_df$dt <- strptime(x = as.character(joined_df$dt),
+                                format = "%Y-%m-%d %H:%M:%S")
+joined_df$dt <- as.POSIXct(joined_df$dt, tz = "", format="%Y-%m-%d %H:%M:%S")
+
+joined_df[c("session","visitor","event2_1","event2_2","event2_3","event2_4","event2_5","event2_6","event2_7","event2_8","event2_9","event2_10","event1_1","event1_2","event1_4","event1_5","event1_6","event1_7","event1_8","event1_9","event1_10","event1_11","event1_0","category_1","category_2","category_3")]<-lapply(joined_df[c("session","visitor","event2_1","event2_2","event2_3","event2_4","event2_5","event2_6","event2_7","event2_8","event2_9","event2_10","event1_1","event1_2","event1_4","event1_5","event1_6","event1_7","event1_8","event1_9","event1_10","event1_11","event1_0","category_1","category_2","category_3")], function(x) ifelse(is.na(joined_df$dt)==TRUE,NA,x))
+
+joined_df<- joined_df %>% filter(orderdate>=dt | is.na(dt)==TRUE)
+head(joined_df,20)
+```
+as you can see for a customer with a given orderno and prodcat1, only the online activity on or before the time of the order is joined. Now lets calculate the difference between orderdate and dt.
+Note: We are also incluing the order data for which no online data is available
+
+```{r}
+joined_df$date_diff<- difftime(joined_df$orderdate,joined_df$dt,units = 'days')
+head(joined_df,20)
+```
+
+We are assuming that only the last 30 days of online activity drives buying behaviour. Therefor we will only consider online activities and browsing category that occured 30 days before a transaction.
+
+```{r}
+joined_df1 <- joined_df %>% filter(date_diff<=30 | is.na(date_diff)==TRUE)
+joined_df2 <- joined_df %>% filter(date_diff>30)
+joined_df2[,13:36]=0
+joined_df_new <- rbind(joined_df1,joined_df2)
+joined_df_new[, 13:36][is.na(joined_df_new[, 13:36])] <- 0
+
+head(joined_df_new,20)
+```
+What we have done above is for date difference greater than 30 days, we have changed the events flags (event2_1, event2_2 etc.) and to browsing category flags to 0 as we are not considering those events to have an impact on the buying behaviour. Now we will aggregate the data by taking the count of each events and categories. This count will be the number of times that event has happened (or browsing category used) in the past 30 days before a transaction.
+
+Now we will aggregate the data to order-prodcat1 level
+
+```{r}
+df<- joined_df_new %>% group_by(custno,ordno,orderdate,prodcat1,cumrev_till_prev_order,cumnum_prod_till_prev_order,rev_prev_ord,num_prod_prev_ord,num_days_till_last_order) %>% 
+  summarise(sum_category_1 = sum(category_1),
+            sum_category_2 = sum(category_2),
+            sum_category_3 = sum(category_3),
+            sum_event1_1 = sum(event1_1),
+            sum_event1_2 = sum(event1_2),
+            sum_event1_4 = sum(event1_4),
+            sum_event1_5 = sum(event1_5),
+            sum_event1_6 = sum(event1_6),
+            sum_event1_7 = sum(event1_7),
+            sum_event1_8 = sum(event1_8),
+            sum_event1_9 = sum(event1_9),
+            sum_event1_10 = sum(event1_10),
+            sum_event1_11 = sum(event1_11),
+            sum_event2_1 = sum(event2_1),
+            sum_event2_2 = sum(event2_2),
+            sum_event2_3 = sum(event2_3),
+            sum_event2_4 = sum(event2_4),
+            sum_event2_5 = sum(event2_5),
+            sum_event2_6 = sum(event2_6),
+            sum_event2_7 = sum(event2_7),
+            sum_event2_8 = sum(event2_8),
+            sum_event2_9 = sum(event2_9),
+            sum_event2_10 = sum(event2_10),
+            avg_date_diff = mean(date_diff,na.rm = TRUE)
+            )
+```
+
+```{r}
+head(as.data.frame(df))
+```
+
+Another metric we can include is revenue per product for cumuative value as well as previous orders
+```{r}
+df$cumrev_per_prod_till_prev_order <- ifelse(df$cumrev_till_prev_order==0,0,df$cumrev_till_prev_order/df$cumnum_prod_till_prev_order)
+
+df$rev_per_prod_prev_ord <- ifelse(df$rev_prev_ord==0,0,df$rev_prev_ord/df$num_prod_prev_ord)
+df[,c('cumrev_till_prev_order','cumnum_prod_till_prev_order','rev_prev_ord','num_prod_prev_ord')]<-NULL
+```
+
+
+```{r}
+df$avg_date_diff<-as.numeric(df$avg_date_diff)
+```
+
+Breaking down orderdate to month, quarter, day-of-week, week of the year and hour
+```{r}
+df$order_month<-format(df$orderdate,"%m")
+df$order_week_of_year<-strftime(df$orderdate,format="%W")
+library(lubridate)
+df$order_qtr<-quarter(df$orderdate)
+df$order_day_of_week<-weekdays(df$orderdate,abbreviate = TRUE)
+df$order_hour_of_day<-format(df$orderdate,"%H")
+
+# converting the above features to factors
+df[c('order_month','order_week_of_year','order_qtr','order_day_of_week','order_hour_of_day')] <- lapply(df[c('order_month','order_week_of_year','order_qtr','order_day_of_week','order_hour_of_day')], factor)
+```
+
+
+We have created the folllowing features by manipulating and combining order and online data.
+```{r}
+head(as.data.frame(df))
+```
+
+The summary of the data is
+```{r}
+summary(df)
+```
+
+###3. Feature Selection
+
+Lets look at the correlation between cumrev_per_prod_till_prev_order and rev_per_prod_prev_ord.
+```{r}
+
+cor(df[,!names(df) %in% c("custno","ordno","orderdate","prodcat1","order_month","order_day_of_week","order_week_of_year","order_qtr","order_hour_of_day")])
+```
+This is a very high correlation.
+```{r}
+cor(df$rev_per_prod_prev_ord,df$cumrev_per_prod_till_prev_order)
+```
+Therefore, we will choose only one metric as a predictor, which is rev_per_prod_prev_ord.
+```{r}
+df$cumrev_per_prod_till_prev_order <- NULL
+```
+
+For categorical variables, we will perform the chi-square test of association. We will compare various columns derived from orderdate. 
+```{r}
+#"custno","ordno","orderdate","prodcat1","order_month",
+chisq.test(df$order_month,df$order_qtr)
+chisq.test(df$order_day_of_week,df$order_hour_of_day)
+chisq.test(df$order_day_of_week,df$order_week_of_year)
+```
+since the p-value is < 2.2e-16 is less than the cut-off value of 0.05, we can reject the null hypothesis in favor of alternative hypothesis and conclude, that the variables are dependent to each other. Therefore, we will only consider one variable for moedeling, which is order_month and delete the rest.
+
+```{r}
+df[,c("order_day_of_week","order_week_of_year","order_qtr","order_hour_of_day")]<-NULL
+
+#removing id columns
+df[,c("custno","ordno","orderdate")]<-NULL
+```
+We have removed combination of highly correlated variables and highly associated variable. During the model building phase we will encounter some variables that are not significant predictors to the response variable. In those steps, we will still be performing feature selection by removing insignificant predictors and keeping significant ones.
+
+##4. Model Designing and sampling
+
+We have prepared the data that now we can use to fit a model. We are trying to fit a model which predicts what product category-1 is a user most likely to buy based on his past online-activity as well as his buying behaviour. We will split the data into training and test sample. We will use the training sample to fit different classification models and test sample to measure the performance of the model. The train-test split is 70-30 split, i.e., 70% of the data is used for training and 30% for testing.
+
+```{r}
+## 70% of the sample size
+smp_size <- floor(0.70 * nrow(df))
+
+## set the seed to make your partition reproducible
+set.seed(1234)
+train_ind <- sample(seq_len(nrow(df)), size = smp_size)
+
+train <- df[train_ind, ]
+test <- df[-train_ind, ]
+
+```
+
+Our response mode is prodcat1. We need to make sure that all the classes of prodcat1 are present in train and test samples
+```{r}
+table(train$prodcat1)
+```
+
+```{r}
+table(test$prodcat1)
+```
+
+In the next section, we will use different modelling techniques to fit a multi-class classifcation models. We will use the following algorithms
+*1. Logistic regression
+*2. Random Forest Regression
+
+Logistic regression works well for linear relationships and has high interpretability, whereas Random Forest can fit non-linear relationships at the cost of interpretation.
+
+The metric we will use to determine the best model is test-AUC (Area under the curve of the ROC curve for test sample)
+
+##5. Model Generation and Evaluation
+
+```{r}
+#remove unnecessary objects to free-up space
+rm(list=ls()[! ls() %in% c("df","train","test","online","order")])
+gc()
+```
+
+In this step we will fit different models on the training sample and predict for the test sample 
+
+### Logistic Regrssion
+We will fit a mutinomial logistic regression model. We will ignore num_days_till_last_order and avg_date_diff in logistic regression as they have NA values. We could impute those values but given the time constraint, we will choose to ignore them. 
+```{r}
+train1<- train
+test1<- test
+train1[,c("num_days_till_last_order","avg_date_diff")]<-NULL
+test1[,c("num_days_till_last_order","avg_date_diff")]<-NULL
+
+library(nnet)
+# Fit the model
+glm <- nnet::multinom(prodcat1 ~., data = train1)
+# Summarize the model
+summary(glm)
+```
+
+Now we'll calculate Z score and p-Value for the variables in the model.
+```{r}
+
+z <- summary(glm)$coefficients/summary(glm)$standard.errors
+
+p <- (1 - pnorm(abs(z), 0, 1))*2
+p
+```
+
+Calculating the the odds ratio coefficient for each predictor 
+```{r}
+exp(coef(glm))
+```
+
+Calculate Variable importance (absolute value of t-statistic)
+```{r}
+library(caret)
+varimp_glm<-as.data.frame(varImp(glm))
+varimp_glm$predictor<-rownames(varimp_glm)
+colnames(varimp_glm)[1]<-'importance'
+
+varimp_glm %>% arrange(desc(importance))
+
+```
+We can see that order month is the most important parameter. This is evident from the time series trends that we observed while exploring the data. Other important variables were sum_event1_8 ,sum_event1_8, and sum_event1_5 
+
+Let's check for fitted values now.
+```{r}
+head(fitted(glm))
+```
+
+
+predicting on the test data
+```{r}
+predict_tst=as.data.frame(predict(glm,test1,type="probs"))
+colnames(predict_tst)<-sapply(colnames(predict_tst), function(x) paste('logit_',x,sep = ""))
+predict_tst$predicted_class<-apply(predict_tst,1,which.max)
+predict_tst$predicted_class<-ifelse(predict_tst$predicted_class==6,7,predict_tst$predicted_class)
+head(predict_tst)
+
+#test1=cbind(test1, predict_tst)
+```
+
+Creating confusion matrix for test sample
+```{r}
+tab<-table(predict_tst$predicted_class,test1$prodcat1)
+library(caret) 
+conf<-confusionMatrix(tab)
+conf
+```
+Class2 has high sensitivity, which means the model has a higher True Positive Rate for Class2. This means that the model does a good job of predicting whether a customer will will buy product category 2. At the same time it does a poor job of predicting whether a customer is not going to buy a product from prodcat2 or not. This is evident from the specificity of Class2
+
+If we  we look at the sensitivity and specificity across all the other classes, we will see that the sensitivity values are low and specificity values are high. This means that, for the other classes the model does a better job identifying whether a customer is not going to buy a product in that class than predicting whether a customer is going to buy a product in that class
+
+
+
+Calculating Test AUC of the ROC curve. The AUC is a measure of how well a model does a job of distinguishing between classes 
+```{r}
+library(HandTill2001)
+auc(multcap(response=test1$prodcat1,predicted = predict(glm,test1,type="probs")))
+```
+This is a decent value. But it could be improved further by using complex models.
+
+### Random Forest Classification
+
+
+```{r}
+# train1<- train
+# test1<- test
+# train1[,c("num_days_till_last_order","avg_date_diff")]<-NULL
+# test1[,c("num_days_till_last_order","avg_date_diff")]<-NULL
+
+library(randomForest)
+# Fit the model
+set.seed(1234)
+rf <- randomForest(prodcat1 ~., data = train1, ntree=500, mtry=round(sqrt(ncol(train)-1)), importance=TRUE)
+# Summarize the model
+rf
+```
+
+
+
+Calculate Variable importance
+```{r}
+varImp(rf)
+```
+Similar to what we have observed in the multinomial logistic regression, we can see that order month is the most important predictor.
+
+
+predicting on the test data
+```{r}
+predict_tst_rf=as.data.frame(predict(rf,test1,type="prob"))
+colnames(predict_tst_rf)<-sapply(colnames(predict_tst_rf), function(x) paste('rf_',x,sep = ""))
+predict_tst_rf$predicted_class_rf<-apply(predict_tst_rf,1,which.max)
+predict_tst_rf$predicted_class_rf<-ifelse(predict_tst_rf$predicted_class_rf==6,7,predict_tst_rf$predicted_class_rf)
+head(predict_tst_rf)
+
+#test1=cbind(test1, predict_tst_rf)
+```
+
+Creating confusion matrix for test sample
+```{r}
+tab_rf<-table(predict_tst_rf$predicted_class_rf,test1$prodcat1)
+library(caret) 
+conf_rf<-confusionMatrix(tab_rf)
+conf_rf
+```
+The accuracy of the model is similar to the multinomial logisitic regression. Even the sensitivity and specificity across the classes is similar to multinomial logistic regression. Class 2 has high sensitivity and low specificity and all the other classes have low sensitivity and high specificity. 
+
+
+Calculating Test AUC of the ROC curve
+```{r}
+library(HandTill2001)
+auc(multcap(response=test$prodcat1,predicted = predict(rf,test1,type="prob")))
+```
+
+The random forest model has better fit on the training data, as evident from the model summary, but it does not do a job better than multinomial logistic regression to seperate the classes. One possible reason could be that we did not choose that big of an ensemble. The number of trees that we choose in the forest were only 500. If we increase it, the performance will improve.
+
+
+### Random Forest with hyper parameter tuning
+
+We tune the hyperparameters of random forest model so that it can converge on a more optimal output. There are two hyper parameters of the random forest
+
+*1. mtry: number of predictors randomly chosen for the decision trees in the forests
+*2. ntree: total number of decision trees in the forest.
+
+One caveat though, this process requires a lot of computation and takes some time to converge.
+```{r}
+# levels(train1$prodcat1)<-c("cat1","cat2","cat3","cat4","cat5","cat7")
+# levels(test1$prodcat1)<-c("cat1","cat2","cat3","cat4","cat5","cat7")
+```
+
+
+```{r}
+# library(tidyverse)
+# library(caret)
+# library(randomForest)
+# customRF <- list(type = "Classification", library = "randomForest", loop = NULL)
+# customRF$parameters <- data.frame(parameter = c("mtry", "ntree"), class = rep("numeric", 2), label = c("mtry", "ntree"))
+# customRF$grid <- function(x, y, len = NULL, search = "grid") {}
+# customRF$fit <- function(x, y, wts, param, lev, last, weights, classProbs, ...) {
+#   randomForest(x, y, mtry = param$mtry, ntree=param$ntree, ...)
+# }
+# customRF$predict <- function(modelFit, newdata, preProc = NULL, submodels = NULL)
+#   predict(modelFit, newdata)
+# customRF$prob <- function(modelFit, newdata, preProc = NULL, submodels = NULL)
+#   predict(modelFit, newdata, type = "prob")
+# customRF$sort <- function(x) x[order(x[,1]),]
+# customRF$levels <- function(x) x$classes
+```
+
+```{r}
+# control <- trainControl(method="cv", number=10, #repeats=3, 
+#                         classProbs = TRUE)
+# tunegrid <- expand.grid(.mtry=c(15:18), .ntree=c(500, 1000))
+# set.seed(1234)
+# custom <- train(prodcat1~., data=train1, method=customRF, metric="ROC", tuneGrid=tunegrid, trControl=control)
+# summary(custom)
+# plot(custom)
+```
+
+I have included the code but has not run it as it takes a lot of time to run and knit the report.
+
+##6. Summary
+
+To summarise, we had the customer order data as well as customer online activity data. We explored the data and found out that there is a seasonality in the revenue, number of orders, as well as the online activity. It peaks during Nov and Dec and drops during the months of Feb and Oct. We also saw that this trend is consitent across browsing categories as well as differnet online events. We also found out that most of the online activity is done on browsing category 3.
+
+We also tried associating customer order data with online behaviour. While doing so, we made an assumption  
+*1. Only the last 30 days of online activity drives buying behaviour for a customer.  
+Any activity before that does not affect buying behaviour significantly. Based on this assumption, we have merged the online data with the order data. We were also able to derive som metrics like, count of each online event before the purchase, Number of days since last order, order month etc. We have used this metric to predict product category-1.
+
+The predictive problem we are trying to solve is: Based on historical purchases and online beviour, what is the likelihood that a customer would purchase a product from a product-category1. To fit and measure the performance of the model, we first split the data into training and test sample. 70% of the data is used for training and 30% for measure its performance on unseen data. We have tried multinomial logistic regression, random forest, and random forest with hyper parameter tuning. Both the models performed decent on the test data. The models are good at identifying whether a customer is not going to buy from a particular product-category. The AUC value shows that the model does a decent job of separating classes in logistic regression. To improve the performance of the random forest model, we can perform hyperparameter tuning using a grid-search approach. This process takes a lot of time and computation capacity. I have shared the code for doing that.
+
+With a better predicitve power, we can predict with high accuracy the product category where a customer is mostly likely to shop from. We can use this information to run targeted campaign or provide incentive to buy back from us.
